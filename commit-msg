@@ -1,0 +1,153 @@
+#!/bin/env php
+<?php
+// Define our Directory Seperator
+define('DS', DIRECTORY_SEPARATOR);
+
+// Path to the index folder
+$path = dirname(dirname(dirname(__FILE__)));
+
+// Version file
+$index_file = realpath($path . DS .'index.php');
+
+// Get our arguments
+$message = file_get_contents($argv[1]);
+
+// Do our processing
+process($message);
+
+// Exit 0, telling Git there was no errors, and to continue
+exit(0);
+
+// Our main processing function!
+function process($message)
+{
+    global $path, $index_file;
+    if (strlen($message) < 5) 
+    {
+        echo 'A commit message at least five characters';
+        exit(1);
+    }
+    
+    // Make sure we have a new build number
+    $line = substr($message,0,5);
+    if(!preg_match('/\[([0-9]+)\]/', $line, $output))
+    {
+        echo 'No build number found. Please correct the commit message by including the build number "[100]"';
+        exit(1);
+    }
+    
+    // Get the contents from our file
+    $index = file_get_contents($index_file);
+    
+    // Match the cms build
+    if(preg_match('/CMS_BUILD\', ([0-9]+)/', $index, $matches))
+    {
+        // Update the commit message and index file
+        $version = $matches[1] + 1;
+        
+        // Make sure versions match!
+        if($version != $output[1])
+        {
+            echo 'Commit message version does NOT match the index.php version (+1)!';
+            exit(1);
+        }
+
+        // Get a list of added/changed/removed files for the commit.info page
+        exec('git diff --cached --name-status', $files);
+        
+        // Create 3 output arrays! We want to add new files first, then proccess modifed, and finally removed files
+        $added = $removed = $modified = array();
+
+        // make a fancy array for the updater
+        foreach($files as $mod)
+        {
+            if(strpos($mod, "\t"))
+            {
+                $file = explode("\t", $mod);
+                
+                // make sure the file is not null
+                if(isset($file[0]) && isset($file[1]))
+                {
+                    // Skip the index file
+                    if( $file[1] == 'index.php' ) continue;
+                    
+                    // Do we have a strange 3rd char?
+                    if(isset($file[2]))
+                    {
+                        $array = array('status' => $file[0], 'file' => $file[1], 'additional' => $file[2]);
+                    }
+                    else
+                    {
+                        $array = array('status' => $file[0], 'file' => $file[1]); 
+                    }
+                    
+                    // Add to the corrisponding array, and double check for syntax errors in files
+                    $c = strtoupper( substr($file[0], 0, 1) );
+                    switch( $c )
+                    {
+                        case "A":
+                            checkSyntax($file[1]);
+                            $added[] = $array;
+                            break;
+                        case "D":
+                            $removed[] = $array;
+                            break;
+                        case "M":
+                            checkSyntax($file[1]);
+                            $modified[] = $array;
+                            break;
+                    }
+                }
+            }
+        }
+        
+        // Combine the arrays
+        $modified[] = array('status' => "M", 'file' => 'index.php');
+        $array = array_merge($added, $modified, $removed);
+        
+        // Write to the index file, the new version
+        $contents = str_replace($matches[1], $version, $matches[0]);
+        $write = file_put_contents($index_file, str_replace($matches[0], $contents, $index));
+        
+        // Make sure the write is successful!
+        if(!$write)
+        {
+            echo 'Was unable to write the new build number in the index.php!';
+            exit(1);
+        }
+        
+        // Now tell GIT to add the index.php modification to this commit
+        exec('git add index.php', $output);
+
+        // Write the commit contents to the commit info file
+        if(!empty($array))
+        {
+            file_put_contents($path . DS .'commit.info', json_encode( $array ));
+            exec('git add commit.info', $output);
+        }
+    }
+    else
+    {
+        echo 'No build number found. Please correct the commit message by including the build number "[100]"';
+        exit(1);
+    }
+}
+
+// Function used to check the syntax of each file
+function checkSyntax($fileName)
+{
+    global $path; 
+    // Only check php files!
+    $parts = explode('.', $fileName);
+    if(!is_array($parts) || (end($parts) != 'php')) return;
+    
+    // Get the realpath to the file
+    $file = realpath( $path . DS . $fileName );
+    exec('php -l ' . $file, $output, $failed);
+    if($failed) 
+    {
+        echo "\n\nSyntax error in $fileName: " . $output[1];
+        exit(1);
+    }
+}
+?>
